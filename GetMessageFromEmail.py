@@ -11,19 +11,8 @@ import smtplib
 from email.mime.text import MIMEText
 from email.header import Header
 from email.utils import formataddr
-
+from email.quoprimime import decode as q_decode
 warnings.filterwarnings("ignore")
-
-EMAIL_ADDRESS = ""
-PASSWORD = ""
-POP_SERVER = "pop.qq.com"
-
-STMP_HOST = "smtp.qq.com"
-STMP_USER = ""
-STMP_PASS = ""
-
-STMP_FROM = ("","") # Real Name, Email Address
-STMP_TO = ("","") # Real Nam, Email Address
 
 class EmailSender:
 
@@ -31,15 +20,15 @@ class EmailSender:
         self.sender = "deralive@qq.com"
         self.receivers = ["2642136260@qq.com"]
         self.message = MIMEText("This is a test email", "plain", "utf-8")
-        self.message["From"] = formataddr(STMP_FROM, 'utf-8')
-        self.message["To"] = formataddr(STMP_TO,'utf-8')
+        self.message["From"] = formataddr(SMTP_FROM, 'utf-8')
+        self.message["To"] = formataddr(SMTP_TO,'utf-8')
         self.message["Subject"] = Header("Test Email",'utf-8')
 
-    # 连接至 STMP 服务器
+    # 连接至 SMTP 服务器
     def stmp_connect(self):
         try:
-            self.smtp_obj = smtplib.SMTP_SSL(STMP_HOST, 465)
-            self.smtp_obj.login(STMP_USER, STMP_PASS)
+            self.smtp_obj = smtplib.SMTP_SSL(SMTP_HOST, 465)
+            self.smtp_obj.login(SMTP_USER, SMTP_PASS)
         except Exception as e:
             print(f"SMTP Connect Error:{e}")
             exit()
@@ -65,15 +54,22 @@ class EmailPatterns:
     PAT_TO = re.compile(b'^To:')
     PAT_DATE = re.compile(b'^Date:')
     PAT_SUBJECT = re.compile(b'^Subject:')
-    PAT_ATTACHMENT_FILENAME = re.compile(b'filename="(.+)"')
-    PAT_DECODED_ATTACHMENT_FILENAME = re.compile(r'filename="(.+)"')
+    PAT_ATTACHMENT_FILENAME = re.compile(b'filename="?(.+)"?') # Fix Bug (1): 双引号是可选的 使用 "? 表示可选
+    PAT_DECODED_ATTACHMENT_FILENAME = re.compile(r'filename="?(.+)"?') # Fix Bug (1): 双引号是可选的 使用 "? 表示可选
     PAT_MIME_FORMAT = re.compile(b'=\?[A-Za-z0-9_-]+\?[BQbq]\?[A-Za-z0-9+/=]+\?=')
 
 class EmailDecoder:
     @staticmethod
     # 解码 Base64 编码的附件
     def decode_attachment_base64(attachment_bin_data: bytes, attachment_name: str) -> None: # Return File Output
-        with open(f"{attachment_name}", "wb") as file:
+        attachment_name = attachment_name.replace('"', '')  # 去除文件名中的双引号
+        output_dir = "Output_Attachment"
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        output_path = os.path.join(output_dir, attachment_name)
+
+        with open(output_path, "wb") as file:
             file.write(attachment_bin_data)
 
     @staticmethod
@@ -93,22 +89,19 @@ class EmailDecoder:
         parts = mime_encoded_part.split(b'?')
         charset = parts[1].decode('utf-8')
         encoding = parts[2].decode('utf-8')
-        encoded_data = parts[3]
+        encoded_data = parts[3].decode('utf-8')
 
         # 解码 Base64 数据
         if encoding.upper() == 'B':
             decoded_bytes = base64.b64decode(encoded_data)
+            decoded_string = decoded_bytes.decode(charset)
+            decoded_header = header.replace(mime_encoded_part, decoded_string.encode('utf-8'))  # 替换回原来的部分
+            return decoded_header.decode('utf-8')
+        elif encoding.upper() == 'Q':
+            decoded_string = q_decode(encoded_data)
+            return decoded_string
         else:
             raise ValueError("不支持的编码方式")
-
-        # 将解码后的字节按指定字符集解码为字符串
-        decoded_string = decoded_bytes.decode(charset)
-
-        # 将解码后的 MIME 片段替换回原始字符串中的相应部分
-        decoded_header = header.replace(mime_encoded_part, decoded_string.encode('utf-8'))
-
-        # 最终返回解码后的结果
-        return decoded_header.decode('utf-8')
 
     @staticmethod
     def check_mime_format(PAT: [bytes],line: bytes) -> str:
@@ -119,10 +112,19 @@ class EmailDecoder:
                 decoded_result = line.decode('utf-8')
             return decoded_result
 
+    @staticmethod
+    # 从字符串解析出 (Real Name, Email Address)
+    def parse_email_tuple(env_value: str) -> tuple | None:
+        if env_value:
+            env_value = env_value.strip('"')
+            name, email = env_value.split(',')
+            return (name.strip(), email.strip())
+        return None
+
 class CommandReceiver:
 
     @staticmethod # 对电脑作出控制指令
-    def do_specific_command(command):
+    def do_specific_command(command: str) -> None:
         if command == 'close':
             print("即将关机")
             os.system("shutdown -s -t 100")
@@ -145,8 +147,8 @@ class EmailReceiver:
         self._password = PASSWORD
         self._pop_server = POP_SERVER
 
-    # 获取邮箱当前邮件数与总字节数
-    def get_emailbox_state(self):
+    # 获取邮箱当前邮件数与总字节数 Tuple(Count, Size)
+    def get_emailbox_state(self) -> tuple:
         try:
             welcome_massage = self.read_email.getwelcome()
             print("\n")
@@ -162,6 +164,8 @@ class EmailReceiver:
         self.email_list = self.read_email.list()
         print("\nEmail List:\n")
         print(f"{self.email_list[1]}")
+
+        return self.all_email[0], self.all_email[1]
 
     # 连接到 POP3 服务器
     def pop_connect(self):
@@ -210,13 +214,22 @@ class EmailReceiver:
                             attachment_base64_data = b''.join(collected_lines).decode('utf-8')
                             attachment_bin_data = base64.b64decode(attachment_base64_data)  # 解码 Base64 获得二进制数据
 
+                            # 使用正则表达式提取文件名
+                            if list_index < len(decoded_attachment_file_header_list):
+                                match = EmailPatterns.PAT_DECODED_ATTACHMENT_FILENAME.search(decoded_attachment_file_header_list[list_index])
+                                if match:
+                                    decoded_attachment_filename = match.group(1)
+                                else:
+                                    decoded_attachment_filename = f"attachment_{list_index}.bin"
+                                list_index += 1  # 递增索引
+                            else:
+                                # 提供一个默认的文件名，以防解析不到
+                                decoded_attachment_filename = f"attachment_{list_index}.bin"
+                                print("Warning: list_index 超出了 decoded_attachment_file_header_list 的范围，使用默认文件名")
+
                             # 调用解码函数处理附件
-                            if list_index <= len(decoded_attachment_file_header_list):
-                                if EmailPatterns.PAT_DECODED_ATTACHMENT_FILENAME.search(decoded_attachment_file_header_list[list_index]):
-                                    decoded_attachment_filename = decoded_attachment_file_header_list[list_index].split('filename="')[1].split('"')[0]
-                                    list_index = list_index + 1
-                                EmailDecoder.decode_attachment_base64(attachment_bin_data, decoded_attachment_filename)
-                                print("\n Get Attachment: {0}".format(decoded_attachment_filename))
+                            EmailDecoder.decode_attachment_base64(attachment_bin_data, decoded_attachment_filename)
+                            print(f"\nGet Attachment: {decoded_attachment_filename}")
 
                             collected_lines = []
                             start = False
@@ -236,30 +249,38 @@ class EmailReceiver:
     def get_email_head_info(self,email_index) -> tuple:
         email_content = self.read_email.retr(email_index)[1] # response, contents(list), octets
 
-        decoded_to_list = []  # 可以同时发送给多个收件人
-        decoded_from = None
-        decoded_date = None
-        decoded_subject = None
+        decoded_list = {
+            "decoded_from": None,
+            "decoded_to_list": [],
+            "decoded_date": None,
+            "decoded_subject": None
+        }
+
         for line in email_content:
             if EmailPatterns.PAT_FROM.search(line):
-                decoded_from = EmailDecoder.check_mime_format(EmailPatterns.PAT_FROM,line)
-            if EmailPatterns.PAT_TO.search(line):
-                decoded_to = EmailDecoder.check_mime_format(EmailPatterns.PAT_TO,line)
-                decoded_to_list.append(decoded_to)
-            if EmailPatterns.PAT_DATE.search(line):
-                decoded_date = EmailDecoder.check_mime_format(EmailPatterns.PAT_DATE,line)
-            if EmailPatterns.PAT_SUBJECT.search(line):
-                decoded_subject = EmailDecoder.check_mime_format(EmailPatterns.PAT_SUBJECT,line)
+                decoded_list["decoded_from"] = EmailDecoder.check_mime_format(EmailPatterns.PAT_FROM, line)
 
-        return decoded_from, decoded_to_list, decoded_date, decoded_subject
+            if EmailPatterns.PAT_TO.search(line):
+                decoded_to = EmailDecoder.check_mime_format(EmailPatterns.PAT_TO, line)
+                decoded_list["decoded_to_list"].append(decoded_to)
+
+            if EmailPatterns.PAT_DATE.search(line):
+                decoded_list["decoded_date"] = EmailDecoder.check_mime_format(EmailPatterns.PAT_DATE, line)
+
+            if EmailPatterns.PAT_SUBJECT.search(line):
+                decoded_list["decoded_subject"] = EmailDecoder.check_mime_format(EmailPatterns.PAT_SUBJECT, line)
+
+        return decoded_list
 
     # 获取邮件正文文本
-    def get_text_content(self, email_index):
+    def get_text_content(self, email_index) -> str:
         email_content = self.read_email.retr(email_index)[1] # response, contents(list), octets
 
         start = False
         collected_lines = []
         list_index = 0
+        final_content = ""
+
         for i, line in enumerate(email_content):
             if b"Content-Type: text/plain" in line:
                 for j in range(i + 1, len(email_content)):
@@ -284,33 +305,44 @@ class EmailReceiver:
                             break
 
                         collected_lines.append(email_content[j])
+        return final_content
 
     # 列出邮箱内所有邮件
     def get_email_list(self):
         self.emails_num = self.read_email.stat()[0]  # 获取邮箱状态
         for i in range(1, self.emails_num + 1): # 邮件的编号是从 1 开始的
-            decoded_from, decoded_to_list, decoded_date, decoded_subject = EmailReceiver.get_email_head_info(self,i)
+            decoded_list = EmailReceiver.get_email_head_info(self,i)
             print(f"Receive Email:{i}")
-            print(f"Email {decoded_from}")
-            print(f"Email {decoded_to_list}")
-            print(f"Email {decoded_date}")
-            print(f"Email {decoded_subject}")
+            print(f"Email {decoded_list["decoded_from"]}")
+            print(f"Email {decoded_list["decoded_to_list"]}")
+            print(f"Email {decoded_list["decoded_date"]}")
+            print(f"Email {decoded_list["decoded_subject"]}")
             print(f"\n")
 
-def receive_main():
+def receive_main(email_index):
     MyEmail = EmailReceiver(EMAIL_ADDRESS, PASSWORD, POP_SERVER)
     MyEmail.pop_connect()
     MyEmail.get_emailbox_state()
     MyEmail.get_email_list()
-    EmailNum = 1
-    MyEmail.get_content(EmailNum)
-    # MyEmail.get_email_head_info(EmailNum)
-    # MyEmail.get_attachment_content(EmailNum)
-    # MyEmail.get_text_content(EmailNum)
+    MyEmail.get_content(email_index)
+    MyEmail.get_email_head_info(email_index)
+    MyEmail.get_attachment_content(email_index)
+    MyEmail.get_text_content(email_index)
 
 def send_main():
     ToSend = EmailSender()
     ToSend.stmp_send_text_email()
 
 if __name__ == "__main__":
-    receive_main()
+    EMAIL_ADDRESS = os.environ["EMAIL_ADDRESS"]
+    PASSWORD = os.environ["PASSWORD"]
+    SMTP_PASS = os.environ["SMTP_PASS"]
+    SMTP_USER = os.environ["SMTP_USER"]
+
+    SMTP_FROM = EmailDecoder.parse_email_tuple(os.environ["SMTP_FROM"])  # 解析成元组 # Tuple:(Real Name,Email Address)
+    SMTP_TO = EmailDecoder.parse_email_tuple(os.environ["SMTP_TO"])  # 解析成元组 # Tuple:(Real Name,Email Address)
+
+    POP_SERVER = "pop.qq.com"
+    SMTP_HOST = "smtp.qq.com"
+
+    receive_main(email_index = 12)

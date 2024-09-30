@@ -45,3 +45,11 @@ Mail sending and receiving function based on POP3 protocol (there are many diffe
 
 - `stmp_send_attachment_email()`
 - 通过 STMP 服务器发送带附件邮件
+
+## Study Information
+IMAP 和 POP 有什么区别？  
+POP 允许客户端下载服务器上的邮件，但是你在电子邮件客户端上的操作（如：移动邮件、标记已读等）不会反馈到服务器。
+IMAP 协议中，客户端的操作都会反馈到服务器，对邮件进行的操作（如：移动邮件、标记已读、删除邮件等）服务器上的邮件也会做相应的动作。
+同时，IMAP 可以只下载邮件的主题。
+
+

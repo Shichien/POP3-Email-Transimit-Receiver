@@ -14,16 +14,16 @@ from email.utils import formataddr
 
 warnings.filterwarnings("ignore")
 
-EMAIL_ADDRESS = "2642136260@qq.com"
-PASSWORD = "xwbvjwjvcnpkebch"
+EMAIL_ADDRESS = ""
+PASSWORD = ""
 POP_SERVER = "pop.qq.com"
 
 STMP_HOST = "smtp.qq.com"
-STMP_USER = "deralive@qq.com"
-STMP_PASS = "xwbvjwjvcnpkebch"
+STMP_USER = ""
+STMP_PASS = ""
 
-STMP_FROM = ("Deralive","deralive@qq.com")
-STMP_TO = ("千","2642136260@qq.com")
+STMP_FROM = ("","") # Real Name, Email Address
+STMP_TO = ("","") # Real Nam, Email Address
 
 class EmailSender:
 
